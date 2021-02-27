@@ -74,6 +74,16 @@ void setup_transmission(const char *version, char *ssid, bool loraHardware) {
   set_status(STATUS_TTN, sendToLora ? ST_TTN_INIT : ST_TTN_OFF);
 }
 
+void poll_transmission() {
+  if (isLoraBoard) {
+    // The LMIC needs to be polled a lot; and this is very low cost if the LMIC isn't
+    // active. So we just act as a bridge. We need this routine so we can see
+    // `isLoraBoard`. Most C compilers will notice the tail call and optimize this
+    // to a jump.
+    poll_lorawan();
+  }
+}
+
 void prepare_http(HttpsClient *client, const char *host) {
   if (host[4] == 's')  // https
     client->hc->begin(*client->wc, host);
@@ -251,40 +261,40 @@ void transmit_data(String tube_type, int tube_nbr, unsigned int dt, unsigned int
     bool madavi_ok;
     log(INFO, "Sending to Madavi ...");
     set_status(STATUS_MADAVI, ST_MADAVI_SENDING);
-    display_status();
+    displayStatus();
     rc1 = send_http_geiger_2_madavi(&c_madavi, tube_type, dt, hv_pulses, gm_counts, cpm);
     rc2 = have_thp ? send_http_thp_2_madavi(&c_madavi, temperature, humidity, pressure) : 200;
     delay(300);
     madavi_ok = (rc1 == 200) && (rc2 == 200);
     log(INFO, "Sent to Madavi, status: %s, http: %d %d", madavi_ok ? "ok" : "error", rc1, rc2);
     set_status(STATUS_MADAVI, madavi_ok ? ST_MADAVI_IDLE : ST_MADAVI_ERROR);
-    display_status();
+    displayStatus();
   }
 
   if(sendToCommunity  && (wifi_status == ST_WIFI_CONNECTED)) {
     bool scomm_ok;
     log(INFO, "Sending to sensor.community ...");
     set_status(STATUS_SCOMM, ST_SCOMM_SENDING);
-    display_status();
+    displayStatus();
     rc1 = send_http_geiger(&c_sensorc, SENSORCOMMUNITY, dt, hv_pulses, gm_counts, cpm, XPIN_RADIATION);
     rc2 = have_thp ? send_http_thp(&c_sensorc, SENSORCOMMUNITY, temperature, humidity, pressure, XPIN_BME280) : 201;
     delay(300);
     scomm_ok = (rc1 == 201) && (rc2 == 201);
     log(INFO, "Sent to sensor.community, status: %s, http: %d %d", scomm_ok ? "ok" : "error", rc1, rc2);
     set_status(STATUS_SCOMM, scomm_ok ? ST_SCOMM_IDLE : ST_SCOMM_ERROR);
-    display_status();
+    displayStatus();
   }
 
   if(isLoraBoard && sendToLora && (strcmp(appeui, "") != 0)) {    // send only, if we have LoRa credentials
     bool ttn_ok;
     log(INFO, "Sending to TTN ...");
     set_status(STATUS_TTN, ST_TTN_SENDING);
-    display_status();
+    displayStatus();
     rc1 = send_ttn_geiger(tube_nbr, dt, gm_counts);
     rc2 = have_thp ? send_ttn_thp(temperature, humidity, pressure) : TX_STATUS_UPLINK_SUCCESS;
     ttn_ok = (rc1 == TX_STATUS_UPLINK_SUCCESS) && (rc2 == TX_STATUS_UPLINK_SUCCESS);
     set_status(STATUS_TTN, ttn_ok ? ST_TTN_IDLE : ST_TTN_ERROR);
-    display_status();
+    displayStatus();
   }
 }
 

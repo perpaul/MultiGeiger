@@ -75,6 +75,32 @@ const lmic_pinmap lmic_pins = {
   .dio = {LORA_IRQ, LORA_IO1, LORA_IO2 },
 };
 
+void my_runloop_once(void) {
+    // declare a type, so we don't care about the type of millis() (32 or 64 bit)
+    using millis_t = decltype(millis());
+
+   // state variables
+    static millis_t tLastPrint;
+    static bool fInit = false;
+
+    // get the current time
+    const  millis_t now = millis();
+
+    // once each minute, print the current high-frequency time.
+    // this will give us an indication that the LMIC is up, and also let us check
+    // that the clock is working properly. Also print opmode and txrx
+    if (! fInit || (now - tLastPrint) >= 60 * 1000) {
+      fInit = true;
+      tLastPrint = now;
+      Serial.print(os_getTime(), HEX);
+      Serial.print(" op=");  Serial.print(LMIC.opmode, HEX);
+      Serial.print(" txrx="); Serial.print(LMIC.txrxFlags, HEX);
+      Serial.println();
+   }
+  // finally: invoke the routine we really want to call.
+  os_runloop_once();
+}
+
 static volatile transmissionStatus_t txStatus;
 static uint8_t *__rxPort;
 static uint8_t *__rxBuffer;
@@ -127,7 +153,7 @@ void onEvent(ev_t ev) {
     // Disable link check validation (automatically enabled
     // during join, but because slow data rates change max TX
     // size, we don't use it in this example.
-    LMIC_setLinkCheckMode(0);
+    // LMIC_setLinkCheckMode(0);
     break;
   // This event is defined but not used in the code.
   // No point in wasting codespace on it.
@@ -194,7 +220,6 @@ void onEvent(ev_t ev) {
   }
 }
 
-
 void setup_lorawan() {
   txStatus = TX_STATUS_UNKNOWN;
   // LMIC init
@@ -203,19 +228,11 @@ void setup_lorawan() {
   LMIC_reset();
   LMIC_setClockError(MAX_CLOCK_ERROR * 1 / 100);
 
-  // Setup the LoRaWan stack for TTN Europe
-  LMIC_setupChannel(0, 868100000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(1, 868300000, DR_RANGE_MAP(DR_SF12, DR_SF7B), BAND_CENTI);  // g-band
-  LMIC_setupChannel(2, 868500000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(3, 867100000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(4, 867300000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(5, 867500000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(6, 867700000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(7, 867900000, DR_RANGE_MAP(DR_SF12, DR_SF7),  BAND_CENTI);  // g-band
-  LMIC_setupChannel(8, 868800000, DR_RANGE_MAP(DR_FSK,  DR_FSK),  BAND_MILLI);  // g2-band
-  LMIC_setLinkCheckMode(0);
-  LMIC.dn2Dr = SF9;
-  LMIC_setDrTxpow(DR_SF7, 14);
+  LMIC_setAdrMode(0);
+}
+
+void poll_lorawan() {
+  os_runloop_once();
 }
 
 // Send LoRaWan frame with ack or not
@@ -229,8 +246,8 @@ void setup_lorawan() {
 // - rxSz : size of received data
 transmissionStatus_t lorawan_send(uint8_t txPort, uint8_t *txBuffer, uint8_t txSz, bool ack, uint8_t *rxPort, uint8_t *rxBuffer, uint8_t *rxSz) {
   // Check if there is not a current TX/RX job running
-  if (LMIC.opmode & OP_TXRXPEND) {
-    log(DEBUG, "OP_TXRXPEND, not sending");
+  if (LMIC.opmode & (OP_POLL | OP_TXDATA | OP_TXRXPEND)) {
+    log(DEBUG, "OP_POLL | OP_TXDATA | OP_TXRXPEND, not sending");
     return TX_STATUS_ENDING_ERROR;
   } else {
     txStatus = TX_STATUS_UNKNOWN;
@@ -246,7 +263,7 @@ transmissionStatus_t lorawan_send(uint8_t txPort, uint8_t *txBuffer, uint8_t txS
       case TX_STATUS_UNKNOWN:
       case TX_STATUS_JOINING:
       case TX_STATUS_JOINED:
-        os_runloop_once();
+         poll_lorawan();
         break;
       case TX_STATUS_UPLINK_SUCCESS:
       case TX_STATUS_UPLINK_ACKED:

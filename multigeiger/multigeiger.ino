@@ -1,6 +1,27 @@
 // Project: Simple Multi-Geiger
 // (c) 2019,2020 by the authors, see AUTHORS file in toplevel directory.
 // Licensed under the GPL v3 (or later), see LICENSE file in toplevel directory.
+//
+// Description: With minimal external components you are able to build a Geiger Counter that:
+//   - is precise
+//   - cheap
+//   - makes the typical tick sounds
+//   - produces a listing via RS232 (via USB)
+//   - is adaptable to your application
+//
+// Information about the new Heltec board ESP32 WIFI OLED:
+// - how to get the device up and running:
+//   - https://robotzero.one/heltec-wifi-kit-32/
+// - driver for the USB=>UART-Chip CP2102:
+//   - http://esp32.net/usb-uart/#SiLabs
+// - infos from the Heltec, the board manufacturer:
+//   - http://www.heltec.cn/project/wifi-kit-32/?lang=en
+// - it is sold on ebay e.g. under the following names:
+//   - "1X(ESP32 WIFI Bluetooth Entwicklungsboard OLED 0.96 "Display IOT Kit Modul GY"
+// - there is also a variant with LoRaWAN:
+//   - http://fambach.net/esp32-wifi-lora-433/
+//   - https://www.hackerspace-ffm.de/wiki/index.php?title=Heltec_Wifi_LoRa_32
+//
 
 #include <Arduino.h>
 
@@ -15,12 +36,11 @@
 #include "webconf.h"
 #include "display.h"
 #include "transmission.h"
-#include "ble.h"
 #include "chkhardware.h"
 #include "clock.h"
 
 // Measurement interval (default 2.5min) [sec]
-#define MEASUREMENT_INTERVAL 150
+#define MEASUREMENT_INTERVAL 300
 
 // Max time the greeting display will be on. [msec]
 #define AFTERSTART 5000
@@ -49,31 +69,19 @@ void setup() {
   setup_webconf(isLoraBoard);
   setup_speaker(playSound, ledTick && switches.led_on, speakerTick && switches.speaker_on);
   setup_transmission(VERSION_STR, ssid, isLoraBoard);
-  setup_ble(ssid, sendToBle && switches.ble_on);
-  setup_log_data(SERIAL_DEBUG);
-  setup_tube();
-}
-
-void setup_ntp(int wifi_status) {
-  static bool clock_configured = false;
-  if (clock_configured)
-    return;
-
-  // this is called from loop() because we do not want to block in setup().
-  // it might either take a while until WiFi is ready or it might even never
-  // be ready, e.g. in LoRa-based deployments or on the road using BLE.
 
   // a bug in arduino-esp32 1.0.4 crashes the esp32 if the wifi is not
   // configured yet and one tries to configure for NTP:
-  if (wifi_status != ST_WIFI_CONNECTED)
-    return;
-
+  while (iotWebConf.getState() <= IOTWEBCONF_STATE_NOT_CONFIGURED) {
+    iotWebConf.delay(200);
+  }
   setup_clock(0);  // 0 == do NTP!
   // please note that time is not necessarily NTP-correct below here.
-  // it might take some minutes until we have the correct time.
+  // it might some minutes until we have the correct time.
   // if we do not have a connection to NTP servers, it will just count up from 1970.
 
-  clock_configured = true;
+  setup_log_data(SERIAL_DEBUG);
+  setup_tube();
 }
 
 int update_wifi_status(void) {
@@ -96,17 +104,7 @@ int update_wifi_status(void) {
   return st;
 }
 
-int update_ble_status(void) {  // currently no error detection
-  int st;
-  if (sendToBle && switches.ble_on)
-    st = is_ble_connected() ? ST_BLE_CONNECTED : ST_BLE_CONNECTABLE;
-  else
-    st = ST_BLE_OFF;
-  set_status(STATUS_BLE, st);
-  return st;
-}
-
-void publish(unsigned long current_ms, unsigned long current_counts, unsigned long gm_count_timestamp, unsigned long current_hv_pulses) {
+void display(unsigned long current_ms, unsigned long current_counts, unsigned long gm_count_timestamp, unsigned long current_hv_pulses) {
   static unsigned long last_timestamp = millis();
   static unsigned long last_counts = 0;
   static unsigned long last_hv_pulses = 0;
@@ -142,10 +140,9 @@ void publish(unsigned long current_ms, unsigned long current_counts, unsigned lo
     accumulated_Count_Rate = (accumulated_time != 0) ? (float)accumulated_GMC_counts * 1000.0 / (float)accumulated_time : 0.0;
     accumulated_Dose_Rate = accumulated_Count_Rate * GMC_factor_uSvph;
 
-    // ... and update the data on display, notify via BLE
-    update_bledata((unsigned int)(Count_Rate * 60));
-    display_GMC(((int)accumulated_time / 1000), (int)(accumulated_Dose_Rate * 1000), (int)(Count_Rate * 60),
-                (showDisplay && switches.display_on));
+    // ... and display them.
+    DisplayGMC(((int)accumulated_time / 1000), (int)(accumulated_Dose_Rate * 1000), (int)(Count_Rate * 60),
+               (showDisplay && switches.display_on));
 
     if (Serial_Print_Mode == Serial_Logging) {
       log_data(counts, dt, Count_Rate, Dose_Rate, hv_pulses,
@@ -157,8 +154,7 @@ void publish(unsigned long current_ms, unsigned long current_counts, unsigned lo
     static unsigned long afterStartTime = AFTERSTART;
     if (afterStartTime && ((current_ms - boot_timestamp) >= afterStartTime)) {
       afterStartTime = 0;
-      update_bledata(0);
-      display_GMC(0, 0, 0, (showDisplay && switches.display_on));
+      DisplayGMC(0, 0, 0, (showDisplay && switches.display_on));
     }
   }
 }
@@ -256,6 +252,8 @@ void loop() {
   // time between last 2 geiger mueller events [us]
   unsigned int gm_count_time_between;
 
+  poll_transmission();
+
   read_GMC(&gm_counts, &gm_count_timestamp, &gm_count_time_between);
 
   read_THP(current_ms, &have_thp, &temperature, &humidity, &pressure);
@@ -264,11 +262,8 @@ void loop() {
   set_status(STATUS_HV, hv_error ? ST_HV_ERROR : ST_HV_OK);
 
   int wifi_status = update_wifi_status();
-  setup_ntp(wifi_status);
 
-  update_ble_status();
-
-  publish(current_ms, gm_counts, gm_count_timestamp, hv_pulses);
+  display(current_ms, gm_counts, gm_count_timestamp, hv_pulses);
 
   if (Serial_Print_Mode == Serial_One_Minute_Log)
     one_minute_log(current_ms, gm_counts);
